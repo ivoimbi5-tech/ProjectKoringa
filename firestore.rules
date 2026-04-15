@@ -1,0 +1,94 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: projects
+// Document ID: auto-generated
+// Fields:
+//   - name: string (required, 1-100 chars)
+//   - description: string (optional, 0-500 chars)
+//   - link: string (optional, URL format)
+//   - status: string (required, enum: ['ready', 'in-progress', 'site'])
+//   - userId: string (required, matches auth.uid)
+//   - createdAt: timestamp (required)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll(['name', 'status', 'userId', 'createdAt', 'isPublic']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.status in ['ready', 'in-progress', 'site'] &&
+             data.userId == request.auth.uid &&
+             data.isPublic is bool &&
+             data.createdAt is timestamp &&
+             (!('likes' in data) || data.likes is number) &&
+             (!('accesses' in data) || data.accesses is number) &&
+             (!('xp' in data) || data.xp is number) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             (!('link' in data) || (data.link is string && data.link.size() <= 2000));
+    }
+
+    function isValidComment(data) {
+      return data.keys().hasAll(['projectId', 'authorName', 'content', 'createdAt']) &&
+             data.projectId is string &&
+             data.authorName is string && data.authorName.size() > 0 && data.authorName.size() <= 50 &&
+             data.content is string && data.content.size() > 0 && data.content.size() <= 1000 &&
+             data.createdAt is timestamp &&
+             (!('contact' in data) || (data.contact is string && data.contact.size() <= 100));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /projects/{projectId} {
+      // Allow anyone to read public projects, or owners to read their own
+      allow read: if resource.data.isPublic == true || isOwner(resource.data.userId);
+      
+      // Only authenticated users can create their own projects
+      allow create: if isAuthenticated() && isValidProject(request.resource.data);
+      
+      // Owners can update everything. 
+      // Non-owners can ONLY update likes and accesses (and xp which is tied to them)
+      allow update: if (isOwner(resource.data.userId) && isValidProject(request.resource.data)) ||
+                    (
+                      request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'accesses', 'xp']) &&
+                      request.resource.data.get('likes', 0) >= resource.data.get('likes', 0) &&
+                      request.resource.data.get('accesses', 0) >= resource.data.get('accesses', 0)
+                    );
+      
+      allow delete: if isOwner(resource.data.userId);
+    }
+
+    match /comments/{commentId} {
+      // Only the project owner can read comments
+      allow read: if isAuthenticated() && 
+                   get(/databases/$(database)/documents/projects/$(resource.data.projectId)).data.userId == request.auth.uid;
+      // Anyone can create a comment
+      allow create: if isValidComment(request.resource.data);
+      // Only owner of the project can delete comments
+      allow delete: if isAuthenticated() && get(/databases/$(database)/documents/projects/$(resource.data.projectId)).data.userId == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId);
+    }
+  }
+}
